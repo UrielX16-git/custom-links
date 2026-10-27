@@ -1,0 +1,36 @@
+services:
+  custom-links:
+    build: .
+    container_name: custom-links
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    networks:
+      - shared_proxy
+
+  custom-links-mcp:
+    build: .
+    container_name: custom-links-mcp
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - MCP_TRANSPORT=sse
+      - MCP_PORT=8001
+      - MCP_HOST=0.0.0.0
+    env_file:
+      - .env
+    command: [ "python", "/app/mcp/server.py" ]
+    networks:
+      - shared_proxy
+    profiles:
+      - mcp
+
+networks:
+  shared_proxy:
+    external: true
+    name: ${SHARED_PROXY_NETWORK}
