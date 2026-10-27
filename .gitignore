@@ -80,3 +80,6 @@ $RECYCLE.BIN/
 *~
 .fuse_hidden*
 .directory
+
+# Docker
+docker-compose.override.yml
