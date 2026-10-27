@@ -64,7 +64,7 @@ Content-Type: application/json
 | Parámetro | Tipo | Requerido | Default | Descripción |
 | :--- | :--- | :---: | :---: | :--- |
 | `target_url` | string | **Sí** | - | URL de destino real protegida o interna. |
-| `expires_in` | integer | No | `3600` (1 h) | Tiempo de expiración en segundos. Máximo permitido: `2592000` (30 días). Configurable vía `DEFAULT_EXPIRES_IN`. |
+| `expires_in` | integer | No | `14400` (4 h) | Tiempo de expiración en segundos. Máximo permitido: `2592000` (30 días). Configurable vía `DEFAULT_EXPIRES_IN`. |
 | `max_uses` | integer | No | `null` (ilimitado) | Número máximo de aperturas/descargas permitidas antes de expirar. |
 | `custom_slug` | string | No | `null` (aleatorio) | Slug personalizado (hasta 80 caracteres). Si no se envía, genera un hash aleatorio seguro (~11 caracteres). |
 | `filename` | string | No | `null` | Nombre sugerido de archivo para header `Content-Disposition`. |
@@ -115,21 +115,21 @@ Expone las herramientas:
 - `get_link` (consultar estado y usos)
 - `revoke_link` (revocar enlaces)
 
-## Modo Remoto SSE 
+### Modo Remoto HTTP (`/mcp` Streamable HTTP)
 
 Levanta el servicio MCP en segundo plano:
 
 ```bash
-docker compose --profile mcp up -d custom-links-mcp
+docker compose --profile mcp up -d --build custom-links-mcp
 ```
 
-Quedará escuchando en `http://localhost:8001/sse`. En clientes compatibles con SSE (Cursor, LibreChat, etc.), añade:
+Quedará escuchando en `http://localhost:8001/mcp` utilizando la especificación estándar moderna de MCP (Streamable HTTP):
 
 ```json
 {
   "mcpServers": {
     "custom-links": {
-      "url": "http://localhost:8001/sse"
+      "url": "http://localhost:8001/mcp"
     }
   }
 }
