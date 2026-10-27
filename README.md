@@ -59,6 +59,16 @@ Content-Type: application/json
 }
 ```
 
+### Parámetros y Valores por Defecto
+
+| Parámetro | Tipo | Requerido | Default | Descripción |
+| :--- | :--- | :---: | :---: | :--- |
+| `target_url` | string | **Sí** | - | URL de destino real protegida o interna. |
+| `expires_in` | integer | No | `3600` (1 h) | Tiempo de expiración en segundos. Máximo permitido: `2592000` (30 días). Configurable vía `DEFAULT_EXPIRES_IN`. |
+| `max_uses` | integer | No | `null` (ilimitado) | Número máximo de aperturas/descargas permitidas antes de expirar. |
+| `custom_slug` | string | No | `null` (aleatorio) | Slug personalizado (hasta 80 caracteres). Si no se envía, genera un hash aleatorio seguro (~11 caracteres). |
+| `filename` | string | No | `null` | Nombre sugerido de archivo para header `Content-Disposition`. |
+
 Consultar link:
 
 ```http
@@ -71,11 +81,30 @@ Revocar link:
 DELETE /api/links/{slug}
 ```
 
-Limpieza manual:
+### Limpieza de enlaces expirados
 
-```http
-POST /api/cleanup
-```
+1. **Limpieza automática periódica (FastAPI Background Task)**:
+   - Viene habilitada por defecto (`AUTO_CLEANUP_ENABLED=true`).
+   - Se ejecuta en segundo plano dentro del contenedor cada 24 horas (`CLEANUP_INTERVAL_SECONDS=86400`).
+   - También realiza una limpieza inicial unos segundos después de que el servicio arranca.
+   - Elimina enlaces expirados por fecha, enlaces que alcanzaron su `max_uses`, y enlaces revocados manualmente.
+
+2. **Limpieza manual vía API**:
+   ```http
+   POST /api/cleanup
+   ```
+
+3. **Cron en el servidor (Opcional)**:
+   Si prefieres delegar la limpieza a una tarea `crontab` en el host:
+   ```bash
+   0 3 * * * curl -s -X POST http://localhost:8000/api/cleanup -H "Authorization: Bearer <TU_API_TOKEN>" > /dev/null
+   ```
+
+### CORS (Frontend)
+
+Para permitir llamadas a `/api/links` desde aplicaciones frontend (React, Vue, Svelte, etc.) en otros dominios o puertos:
+- `CORS_ORIGINS`: Lista de orígenes permitidos separados por coma (ej. `http://localhost:3000,https://app.midominio.com`) o `*` para todos.
+- `CORS_ALLOW_CREDENTIALS`: `true` o `false` (`true` por defecto). Si `CORS_ORIGINS=*`, el sistema ajusta automáticamente credentials para respetar la especificación de Fetch.
 
 ## MCP 
 

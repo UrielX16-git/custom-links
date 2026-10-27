@@ -22,7 +22,7 @@ def _headers() -> Dict[str, str]:
 @mcp.tool()
 def create_link(
     target_url: str,
-    expires_in: int = 3600,
+    expires_in: Optional[int] = None,
     custom_slug: Optional[str] = None,
     filename: Optional[str] = None,
     max_uses: Optional[int] = None,

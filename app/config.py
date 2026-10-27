@@ -13,10 +13,24 @@ class Settings(BaseSettings):
     max_expires_in: int = 60 * 60 * 24 * 30
     max_slug_len: int = 80
 
+    # CORS
+    cors_origins: str = "*"
+    cors_allow_credentials: bool = True
+
+    # Limpieza automática periódica
+    auto_cleanup_enabled: bool = True
+    cleanup_interval_seconds: int = 86400  # 24 horas por defecto
+
     @field_validator("base_url", mode="before")
     @classmethod
     def strip_base_url(cls, value: str) -> str:
         return str(value).rstrip("/")
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        if not self.cors_origins:
+            return ["*"]
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 settings = Settings()

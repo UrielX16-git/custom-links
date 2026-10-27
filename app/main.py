@@ -1,18 +1,80 @@
+import asyncio
+from contextlib import asynccontextmanager
+import logging
 import secrets
 import time
 from typing import Optional
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import settings
 from .models import LinkCreateRequest, LinkCreateResponse, LinkInfoResponse
 from .storage import LinkStore
 
-app = FastAPI(title=settings.app_name)
+logger = logging.getLogger("uvicorn.error")
+
 store = LinkStore(settings.db_path)
 security = HTTPBearer(auto_error=False)
+
+
+async def _periodic_cleanup_loop(interval_seconds: int) -> None:
+    # Breve pausa inicial para permitir que el servidor arranque completamente
+    try:
+        await asyncio.sleep(min(5, interval_seconds))
+        now = int(time.time())
+        deleted = await asyncio.to_thread(store.cleanup_expired, now)
+        if deleted > 0:
+            logger.info(f"[AutoCleanup] Limpieza inicial: {deleted} enlace(s) expirados/agotados eliminados.")
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        logger.error(f"[AutoCleanup] Error en limpieza inicial: {exc}")
+
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            now = int(time.time())
+            deleted = await asyncio.to_thread(store.cleanup_expired, now)
+            if deleted > 0:
+                logger.info(f"[AutoCleanup] Limpieza periódica: {deleted} enlace(s) expirados/agotados eliminados.")
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error(f"[AutoCleanup] Error durante la limpieza automática: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    cleanup_task = None
+    if settings.auto_cleanup_enabled:
+        cleanup_task = asyncio.create_task(_periodic_cleanup_loop(settings.cleanup_interval_seconds))
+        logger.info(
+            f"[AutoCleanup] Tarea de limpieza automática iniciada (intervalo: {settings.cleanup_interval_seconds}s)"
+        )
+    yield
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+# Configuración de CORS
+origins = settings.cors_origins_list
+allow_all = "*" in origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=settings.cors_allow_credentials and not allow_all,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _require_api_token(
@@ -61,7 +123,8 @@ def health() -> dict:
 
 @app.post("/api/links", response_model=LinkCreateResponse, dependencies=[Depends(_require_api_token)])
 def create_link(req: LinkCreateRequest) -> LinkCreateResponse:
-    expires_in = min(req.expires_in, settings.max_expires_in)
+    raw_expires = req.expires_in if req.expires_in is not None else settings.default_expires_in
+    expires_in = min(raw_expires, settings.max_expires_in)
     expires_at = int(time.time()) + expires_in
 
     slug = req.custom_slug or secrets.token_urlsafe(8)
