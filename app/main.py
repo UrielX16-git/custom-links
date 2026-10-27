@@ -4,7 +4,8 @@ import logging
 import secrets
 import time
 from typing import Optional
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
+import unicodedata
+from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -100,6 +101,47 @@ def _build_public_url(slug: str) -> str:
     return f"{base}/s/{slug}"
 
 
+def _sanitize_filename(name: str, fallback: str = "file") -> tuple[str, str]:
+    """
+    Sanea un nombre de archivo para usar en Content-Disposition.
+    Retorna (ascii_filename, utf8_encoded_filename).
+    Elimina caracteres de control, saltos de línea (prevención CRLF) y comillas.
+    """
+    if not name:
+        name = fallback
+
+    clean = name.replace("\\", "/").split("/")[-1].strip()
+    clean = "".join(ch for ch in clean if ord(ch) >= 32 and ord(ch) != 127)
+    clean = clean.replace('"', "").replace(";", "_").strip()
+
+    if not clean:
+        clean = fallback
+
+    # Versión ASCII transliterando acentos/ñ para máxima compatibilidad
+    ascii_clean = unicodedata.normalize("NFKD", clean).encode("ascii", "ignore").decode("ascii").strip()
+    ext = clean.rsplit(".", 1)[1] if "." in clean else ""
+    stem = ascii_clean.rsplit(".", 1)[0] if "." in ascii_clean else ascii_clean
+    if not stem.strip():
+        ascii_clean = f"{fallback}.{ext}" if ext else fallback
+
+    # Versión UTF-8 codificada según RFC 5987 / RFC 6266
+    utf8_encoded = quote(clean, safe="!#$&+-.^_`|~")
+    return ascii_clean, utf8_encoded
+
+
+def _build_content_disposition(filename: Optional[str], target_url: str, slug: str) -> str:
+    candidate = filename
+    if not candidate:
+        parsed = urlsplit(target_url)
+        path = unquote(parsed.path or "")
+        base = path.rstrip("/").split("/")[-1].strip() if path else ""
+        if base:
+            candidate = base
+
+    ascii_name, utf8_name = _sanitize_filename(candidate, fallback=slug)
+    return f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}'
+
+
 def _build_internal_redirect(target_url: str, passthrough_query: str) -> str:
     parsed = urlsplit(target_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -108,12 +150,23 @@ def _build_internal_redirect(target_url: str, passthrough_query: str) -> str:
     raw_path = parsed.path or "/"
     if not raw_path.startswith("/"):
         raw_path = f"/{raw_path}"
-    safe_path = quote(unquote(raw_path))
-    target_query = parse_qsl(parsed.query, keep_blank_values=True)
-    extra_query = parse_qsl(passthrough_query, keep_blank_values=True)
-    merged_query = urlencode(target_query + extra_query)
-    base = f"/_internal_proxy/{parsed.scheme}/{parsed.netloc}{safe_path}"
+
+    # Conservar el query string crudo sin decodificar ni re-codificar
+    # para evitar invalidar firmas en URLs de S3, Azure Blob, Google Cloud Storage, etc.
+    target_query = parsed.query or ""
+    extra_query = passthrough_query or ""
+    if target_query and extra_query:
+        merged_query = f"{target_query}&{extra_query}"
+    elif target_query:
+        merged_query = target_query
+    elif extra_query:
+        merged_query = extra_query
+    else:
+        merged_query = ""
+
+    base = f"/_internal_proxy/{parsed.scheme}/{parsed.netloc}{raw_path}"
     return f"{base}?{merged_query}" if merged_query else base
+
 
 
 @app.get("/health")
@@ -134,12 +187,18 @@ def create_link(req: LinkCreateRequest) -> LinkCreateResponse:
     if len(slug) > settings.max_slug_len:
         raise HTTPException(status_code=400, detail="Slug demasiado largo")
 
+    filename = req.filename
+    # Si no se pasó filename explícito pero el custom_slug tiene extensión (ej. Video.mp4),
+    # usarlo como nombre de descarga
+    if not filename and req.custom_slug and "." in req.custom_slug:
+        filename = req.custom_slug
+
     try:
         store.create_link(
             slug=slug,
             target_url=str(req.target_url),
             expires_at=expires_at,
-            filename=req.filename,
+            filename=filename,
             max_uses=req.max_uses,
         )
     except Exception as exc:
@@ -182,6 +241,9 @@ def resolve_link(slug: str, request: Request, response: Response):
     passthrough_query = request.url.query
     internal_uri = _build_internal_redirect(rec.target_url, passthrough_query)
     response.headers["X-Accel-Redirect"] = internal_uri
-    if rec.filename:
-        response.headers["Content-Disposition"] = f'inline; filename="{rec.filename}"'
+    response.headers["Content-Disposition"] = _build_content_disposition(
+        filename=rec.filename,
+        target_url=rec.target_url,
+        slug=rec.slug,
+    )
     return Response(status_code=200, headers=response.headers)

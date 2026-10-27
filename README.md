@@ -66,8 +66,8 @@ Content-Type: application/json
 | `target_url` | string | **Sí** | - | URL de destino real protegida o interna. |
 | `expires_in` | integer | No | Configurable (ej. 4 h) | Tiempo de expiración en segundos. **Usa `0` para enlaces permanentes**. Máximo permitido cuando es > 0: `2592000` (30 días). Configurable vía `DEFAULT_EXPIRES_IN`. |
 | `max_uses` | integer | No | `null` (ilimitado) | Número máximo de aperturas/descargas permitidas antes de expirar. |
-| `custom_slug` | string | No | `null` (aleatorio) | Slug personalizado (hasta 80 caracteres). Si no se envía, genera un hash aleatorio seguro (~11 caracteres). |
-| `filename` | string | No | `null` | Nombre sugerido de archivo para header `Content-Disposition`. |
+| `custom_slug` | string | No | `null` (aleatorio) | Slug personalizado (hasta 80 caracteres). Admite caracteres alfanuméricos, guiones, guiones bajos y puntos para extensiones de archivo (ej. `Video.mp4`). Si no se envía, genera un hash aleatorio seguro (~11 caracteres). |
+| `filename` | string | No | `null` (inferido) | Nombre sugerido de archivo para header `Content-Disposition` (compatible con acentos/UTF-8 según RFC 5987/6266). Si no se envía, se infiere automáticamente del nombre de archivo en `target_url`. |
 
 Consultar link:
 

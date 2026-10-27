@@ -18,7 +18,8 @@ mcp = FastMCP(
     "custom-links-mcp",
     instructions=(
         "Use this server to create, inspect, and revoke temporary access links with "
-        "customizable expiration times, download filenames, and usage limits."
+        "customizable expiration times, custom slugs (supports file extensions like 'Video.mp4'), "
+        "download filenames, and usage limits."
     ),
 )
 
@@ -46,18 +47,18 @@ def create_link(
     ] = None,
     custom_slug: Annotated[
         Optional[str],
-        Field(description="Optional custom slug (alphanumeric, hyphens, underscores). If omitted, a secure random slug is generated."),
+        Field(description="Optional custom slug in the public URL path (e.g. 'mi-video' or 'Video.mp4'). Supports alphanumeric characters, hyphens, underscores, and dots (e.g. for file extensions). If omitted, a secure random slug is generated."),
     ] = None,
     filename: Annotated[
         Optional[str],
-        Field(description="Optional suggested filename to trigger browser download via Content-Disposition header (e.g. 'document.pdf')."),
+        Field(description="Optional suggested filename to trigger browser download via Content-Disposition header (e.g. 'Video.mp4'). If omitted, it is inferred from custom_slug or target_url."),
     ] = None,
     max_uses: Annotated[
         Optional[int],
         Field(description="Optional maximum number of times the link can be opened or downloaded before expiring. If omitted, uses are unlimited until time expiration."),
     ] = None,
 ) -> Dict[str, Any]:
-    """Create a new temporary short link pointing to a target URL with optional limits."""
+    """Create a new temporary short link pointing to a target URL with optional limits, custom slug (with optional file extension like 'Video.mp4'), or download filename."""
     payload = {
         "target_url": target_url,
         "expires_in": expires_in,

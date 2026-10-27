@@ -18,9 +18,27 @@ class LinkCreateRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("custom_slug vacío")
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        if value.startswith(".") or value.endswith(".") or ".." in value:
+            raise ValueError("custom_slug no puede empezar ni terminar con punto, ni contener puntos consecutivos")
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
         if any(ch not in allowed for ch in value):
-            raise ValueError("custom_slug inválido")
+            raise ValueError("custom_slug inválido (solo letras, números, guiones, guiones bajos y puntos)")
+        return value
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            return None
+        # Prohibir caracteres de control y saltos de línea (prevención CRLF injection)
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise ValueError("filename contiene caracteres de control o saltos de línea no permitidos")
+        # Prohibir comillas dobles y punto y coma que rompen la cabecera HTTP
+        if any(ch in value for ch in ('"', ';', '\r', '\n', '\0')):
+            raise ValueError("filename no puede contener comillas dobles ni punto y coma")
         return value
 
 
