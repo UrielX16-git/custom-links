@@ -92,7 +92,7 @@ class LinkStore:
             rec = self._row_to_record(row)
             if rec.revoked:
                 return None
-            if now > rec.expires_at:
+            if rec.expires_at > 0 and now > rec.expires_at:
                 return None
             if rec.max_uses is not None and rec.use_count >= rec.max_uses:
                 return None
@@ -109,7 +109,7 @@ class LinkStore:
     def cleanup_expired(self, now: int) -> int:
         with self._lock, self._connect() as conn:
             cur = conn.execute(
-                "DELETE FROM links WHERE expires_at < ? OR revoked = 1 OR (max_uses IS NOT NULL AND use_count >= max_uses)",
+                "DELETE FROM links WHERE (expires_at > 0 AND expires_at < ?) OR revoked = 1 OR (max_uses IS NOT NULL AND use_count >= max_uses)",
                 (now,),
             )
             conn.commit()

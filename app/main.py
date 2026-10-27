@@ -123,9 +123,12 @@ def health() -> dict:
 
 @app.post("/api/links", response_model=LinkCreateResponse, dependencies=[Depends(_require_api_token)])
 def create_link(req: LinkCreateRequest) -> LinkCreateResponse:
-    raw_expires = req.expires_in if req.expires_in is not None else settings.default_expires_in
-    expires_in = min(raw_expires, settings.max_expires_in)
-    expires_at = int(time.time()) + expires_in
+    if req.expires_in == 0:
+        expires_at = 0
+    else:
+        raw_expires = req.expires_in if req.expires_in is not None else settings.default_expires_in
+        expires_in = min(raw_expires, settings.max_expires_in)
+        expires_at = int(time.time()) + expires_in
 
     slug = req.custom_slug or secrets.token_urlsafe(8)
     if len(slug) > settings.max_slug_len:

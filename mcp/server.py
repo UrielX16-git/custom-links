@@ -42,7 +42,7 @@ def create_link(
     ],
     expires_in: Annotated[
         Optional[int],
-        Field(description="Expiration time in seconds. Defaults to 3600 (1 hour). Maximum allowed is 2592000 (30 days)."),
+        Field(description="Expiration time in seconds. Set to 0 for permanent links (only use this value if the user explicitly asks for a permanent link). If omitted, uses server default. Maximum allowed when > 0 is 2592000 (30 days)."),
     ] = None,
     custom_slug: Annotated[
         Optional[str],

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 class LinkCreateRequest(BaseModel):
     target_url: HttpUrl
-    expires_in: Optional[int] = Field(default=None, ge=1)
+    expires_in: Optional[int] = Field(default=None, ge=0)
     custom_slug: Optional[str] = None
     filename: Optional[str] = None
     max_uses: Optional[int] = Field(default=None, ge=1)

@@ -64,7 +64,7 @@ Content-Type: application/json
 | Parámetro | Tipo | Requerido | Default | Descripción |
 | :--- | :--- | :---: | :---: | :--- |
 | `target_url` | string | **Sí** | - | URL de destino real protegida o interna. |
-| `expires_in` | integer | No | `14400` (4 h) | Tiempo de expiración en segundos. Máximo permitido: `2592000` (30 días). Configurable vía `DEFAULT_EXPIRES_IN`. |
+| `expires_in` | integer | No | Configurable (ej. 4 h) | Tiempo de expiración en segundos. **Usa `0` para enlaces permanentes**. Máximo permitido cuando es > 0: `2592000` (30 días). Configurable vía `DEFAULT_EXPIRES_IN`. |
 | `max_uses` | integer | No | `null` (ilimitado) | Número máximo de aperturas/descargas permitidas antes de expirar. |
 | `custom_slug` | string | No | `null` (aleatorio) | Slug personalizado (hasta 80 caracteres). Si no se envía, genera un hash aleatorio seguro (~11 caracteres). |
 | `filename` | string | No | `null` | Nombre sugerido de archivo para header `Content-Disposition`. |
