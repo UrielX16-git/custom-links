@@ -1,6 +1,6 @@
 services:
   custom-links:
-    build: .
+    image: urielx16/custom-links:latest
     container_name: custom-links
     restart: unless-stopped
     ports:
@@ -11,9 +11,15 @@ services:
       - ./data:/data
     networks:
       - shared_proxy
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   custom-links-mcp:
-    build: .
+    image: urielx16/custom-links:latest
     container_name: custom-links-mcp
     restart: unless-stopped
     ports:

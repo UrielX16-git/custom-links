@@ -1,0 +1,45 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+.venv
+venv/
+ENV/
+.pytest_cache/
+
+# Git / CI / Agentes
+.git
+.gitignore
+.github/
+.agents/
+
+# Documentación y tests
+*.md
+tests/
+
+# Secretos y configuración local
+.env
+.env.*
+docker-compose*.yml
+*.pem
+*.key
+*credentials*.json
+*secret*.json
+
+# Datos en tiempo de ejecución (SQLite)
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Configuración de Nginx (se pega en NPM, no va en la imagen)
+nginx/

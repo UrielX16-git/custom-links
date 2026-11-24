@@ -11,14 +11,39 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from . import __version__
 from .config import settings
 from .models import LinkCreateRequest, LinkCreateResponse, LinkInfoResponse
-from .storage import LinkStore
+from .proxy import (
+    build_cors_preflight_response,
+    create_proxy_client,
+    extract_raw_subpath,
+    is_cors_preflight,
+    proxy_request,
+    validate_subpath,
+)
+from .storage import LinkRecord, LinkStore
 
 logger = logging.getLogger("uvicorn.error")
 
 store = LinkStore(settings.db_path)
 security = HTTPBearer(auto_error=False)
+
+_ALL_HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+class _ScopedCORSMiddleware:
+    """Aplica el CORS global a la API de gestión (/api/*, /health), sin interferir con /internal-resolve/*."""
+
+    def __init__(self, app, **cors_kwargs):
+        self.app = app
+        self.cors_app = CORSMiddleware(app, **cors_kwargs)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/internal-resolve/"):
+            await self.app(scope, receive, send)
+        else:
+            await self.cors_app(scope, receive, send)
 
 
 async def _periodic_cleanup_loop(interval_seconds: int) -> None:
@@ -49,28 +74,41 @@ async def _periodic_cleanup_loop(interval_seconds: int) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.proxy_client = create_proxy_client(
+        timeout_seconds=settings.dynamic_timeout_seconds,
+        read_timeout_seconds=settings.dynamic_read_timeout_seconds,
+    )
+
     cleanup_task = None
     if settings.auto_cleanup_enabled:
         cleanup_task = asyncio.create_task(_periodic_cleanup_loop(settings.cleanup_interval_seconds))
         logger.info(
             f"[AutoCleanup] Tarea de limpieza automática iniciada (intervalo: {settings.cleanup_interval_seconds}s)"
         )
-    yield
-    if cleanup_task:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+
+    if settings.dynamic_links_enabled:
+        hosts_desc = ", ".join(settings.dynamic_allowed_hosts_list) or "cualquiera"
+        logger.info(f"[DynamicLinks] Modo API habilitado (hosts permitidos: {hosts_desc})")
+
+    try:
+        yield
+    finally:
+        if cleanup_task:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
+        await app.state.proxy_client.aclose()
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
 
-# Configuración de CORS
+# Configuración de CORS (acotado a la API de gestión; los links dinámicos gestionan su propio CORS)
 origins = settings.cors_origins_list
 allow_all = "*" in origins
 app.add_middleware(
-    CORSMiddleware,
+    _ScopedCORSMiddleware,
     allow_origins=origins,
     allow_credentials=settings.cors_allow_credentials and not allow_all,
     allow_methods=["*"],
@@ -168,14 +206,51 @@ def _build_internal_redirect(target_url: str, passthrough_query: str) -> str:
     return f"{base}?{merged_query}" if merged_query else base
 
 
+def _record_to_info(rec: LinkRecord) -> LinkInfoResponse:
+    opts = rec.options or {}
+    raw_headers = opts.get("inject_headers")
+    masked_headers = {k: "***" for k in raw_headers} if isinstance(raw_headers, dict) and raw_headers else None
+
+    return LinkInfoResponse(
+        slug=rec.slug,
+        target_url=rec.target_url,
+        expires_at=rec.expires_at,
+        revoked=bool(rec.revoked),
+        filename=rec.filename,
+        max_uses=rec.max_uses,
+        use_count=rec.use_count,
+        created_at=rec.created_at,
+        last_access_at=rec.last_access_at,
+        mode=rec.mode,
+        allowed_methods=opts.get("allowed_methods") if rec.mode == "api" else None,
+        forward_subpaths=opts.get("forward_subpaths") if rec.mode == "api" else None,
+        inject_headers=masked_headers if rec.mode == "api" else None,
+        cors_origins=opts.get("cors_origins") if rec.mode == "api" else None,
+        count_preflight=opts.get("count_preflight") if rec.mode == "api" else None,
+    )
+
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "version": __version__, "dynamic_links_enabled": settings.dynamic_links_enabled}
 
 
 @app.post("/api/links", response_model=LinkCreateResponse, dependencies=[Depends(_require_api_token)])
 def create_link(req: LinkCreateRequest) -> LinkCreateResponse:
+    target_url = str(req.target_url)
+
+    if req.mode == "api":
+        if not settings.dynamic_links_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail="Los enlaces dinámicos (mode='api') están deshabilitados en el servidor",
+            )
+        if not settings.is_dynamic_host_allowed(target_url):
+            raise HTTPException(
+                status_code=403,
+                detail="Host de destino no permitido por DYNAMIC_ALLOWED_HOSTS",
+            )
+
     if req.expires_in == 0:
         expires_at = 0
     else:
@@ -187,26 +262,45 @@ def create_link(req: LinkCreateRequest) -> LinkCreateResponse:
     if len(slug) > settings.max_slug_len:
         raise HTTPException(status_code=400, detail="Slug demasiado largo")
 
-    filename = req.filename
-    # Si no se pasó filename explícito pero el custom_slug tiene extensión (ej. Video.mp4),
-    # usarlo como nombre de descarga
-    if not filename and req.custom_slug and "." in req.custom_slug:
-        filename = req.custom_slug
+    filename: Optional[str] = None
+    options: Optional[dict] = None
+
+    if req.mode == "file":
+        filename = req.filename
+        # Si no se pasó filename explícito pero el custom_slug tiene extensión (ej. Video.mp4),
+        # usarlo como nombre de descarga
+        if not filename and req.custom_slug and "." in req.custom_slug:
+            filename = req.custom_slug
+    else:
+        options = {
+            "allowed_methods": req.allowed_methods or settings.dynamic_default_methods_list,
+            "forward_subpaths": True if req.forward_subpaths is None else req.forward_subpaths,
+            "inject_headers": req.inject_headers,
+            "cors_origins": req.cors_origins,
+            "count_preflight": False if req.count_preflight is None else req.count_preflight,
+        }
 
     try:
         store.create_link(
             slug=slug,
-            target_url=str(req.target_url),
+            target_url=target_url,
             expires_at=expires_at,
             filename=filename,
             max_uses=req.max_uses,
+            mode=req.mode,
+            options=options,
         )
     except Exception as exc:
         if "UNIQUE constraint failed" in str(exc):
             raise HTTPException(status_code=409, detail="Slug en uso") from exc
         raise
 
-    return LinkCreateResponse(slug=slug, url=_build_public_url(slug), expires_at=expires_at)
+    return LinkCreateResponse(
+        slug=slug,
+        url=_build_public_url(slug),
+        expires_at=expires_at,
+        mode=req.mode,
+    )
 
 
 @app.get("/api/links/{slug}", response_model=LinkInfoResponse, dependencies=[Depends(_require_api_token)])
@@ -214,7 +308,7 @@ def get_link(slug: str) -> LinkInfoResponse:
     rec = store.get_link(slug)
     if not rec:
         raise HTTPException(status_code=404, detail="No existe")
-    return LinkInfoResponse(**rec.__dict__)
+    return _record_to_info(rec)
 
 
 @app.delete("/api/links/{slug}", dependencies=[Depends(_require_api_token)])
@@ -231,19 +325,94 @@ def cleanup_links() -> dict:
     return {"deleted": deleted}
 
 
-@app.get("/internal-resolve/{slug}")
-def resolve_link(slug: str, request: Request, response: Response):
+async def _handle_resolve(slug: str, request: Request) -> Response:
     now = int(time.time())
-    rec = store.register_use_if_valid(slug, now)
+    rec = await asyncio.to_thread(store.get_valid_link, slug, now)
     if not rec:
         raise HTTPException(status_code=404, detail="Link expirado o inválido")
 
-    passthrough_query = request.url.query
-    internal_uri = _build_internal_redirect(rec.target_url, passthrough_query)
-    response.headers["X-Accel-Redirect"] = internal_uri
-    response.headers["Content-Disposition"] = _build_content_disposition(
-        filename=rec.filename,
+    raw_subpath = extract_raw_subpath(request, slug)
+
+    # Flujo clásico de archivos estáticos vía X-Accel-Redirect
+    if rec.mode != "api":
+        if raw_subpath:
+            raise HTTPException(status_code=404, detail="Link expirado o inválido")
+        if request.method.upper() not in {"GET", "HEAD"}:
+            return Response(status_code=405, headers={"Allow": "GET, HEAD"})
+
+        rec = await asyncio.to_thread(store.register_use_if_valid, slug, now)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Link expirado o inválido")
+
+        internal_uri = _build_internal_redirect(rec.target_url, request.url.query)
+        headers = {
+            "X-Accel-Redirect": internal_uri,
+            "Content-Disposition": _build_content_disposition(
+                filename=rec.filename,
+                target_url=rec.target_url,
+                slug=rec.slug,
+            ),
+        }
+        return Response(status_code=200, headers=headers)
+
+    # Flujo dinámico (API / MCP / polling)
+    if not settings.dynamic_links_enabled:
+        raise HTTPException(status_code=404, detail="Link expirado o inválido")
+    if not settings.is_dynamic_host_allowed(rec.target_url):
+        raise HTTPException(status_code=403, detail="Host de destino no permitido")
+
+    opts = rec.options or {}
+    allowed_methods = opts.get("allowed_methods") or settings.dynamic_default_methods_list
+    forward_subpaths = opts.get("forward_subpaths", True)
+    inject_headers = opts.get("inject_headers")
+    cors_origins = opts.get("cors_origins")
+    count_preflight = opts.get("count_preflight", False)
+
+    if raw_subpath and not forward_subpaths:
+        raise HTTPException(status_code=404, detail="Subrutas no habilitadas para este enlace")
+
+    validate_subpath(raw_subpath)
+
+    preflight = is_cors_preflight(request)
+    if preflight and cors_origins:
+        if count_preflight:
+            rec = await asyncio.to_thread(store.register_use_if_valid, slug, now)
+            if not rec:
+                raise HTTPException(status_code=404, detail="Link expirado o inválido")
+        return build_cors_preflight_response(request, cors_origins, allowed_methods)
+
+    if request.method.upper() not in allowed_methods:
+        return Response(status_code=405, headers={"Allow": ", ".join(allowed_methods)})
+
+    if not (preflight and not count_preflight):
+        rec = await asyncio.to_thread(store.register_use_if_valid, slug, now)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Link expirado o inválido")
+
+    client = getattr(request.app.state, "proxy_client", None)
+    if client is None:
+        client = create_proxy_client(
+            timeout_seconds=settings.dynamic_timeout_seconds,
+            read_timeout_seconds=settings.dynamic_read_timeout_seconds,
+        )
+        request.app.state.proxy_client = client
+
+    return await proxy_request(
+        client=client,
+        request=request,
         target_url=rec.target_url,
-        slug=rec.slug,
+        raw_subpath=raw_subpath,
+        inject_headers=inject_headers,
+        cors_origins=cors_origins,
+        max_body_bytes=settings.dynamic_max_body_bytes,
     )
-    return Response(status_code=200, headers=response.headers)
+
+
+@app.api_route("/internal-resolve/{slug}", methods=_ALL_HTTP_METHODS)
+async def resolve_link(slug: str, request: Request):
+    return await _handle_resolve(slug, request)
+
+
+@app.api_route("/internal-resolve/{slug}/{subpath:path}", methods=_ALL_HTTP_METHODS)
+async def resolve_link_with_subpath(slug: str, subpath: str, request: Request):
+    return await _handle_resolve(slug, request)

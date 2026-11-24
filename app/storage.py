@@ -1,9 +1,10 @@
+import json
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -17,6 +18,8 @@ class LinkRecord:
     use_count: int
     created_at: int
     last_access_at: Optional[int]
+    mode: str = "file"
+    options: Optional[dict[str, Any]] = None
 
 
 class LinkStore:
@@ -46,10 +49,19 @@ class LinkStore:
                     max_uses INTEGER,
                     use_count INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
-                    last_access_at INTEGER
+                    last_access_at INTEGER,
+                    mode TEXT NOT NULL DEFAULT 'file',
+                    options_json TEXT
                 )
                 """
             )
+            # Migración automática para bases de datos existentes
+            existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(links)").fetchall()}
+            if "mode" not in existing_cols:
+                conn.execute("ALTER TABLE links ADD COLUMN mode TEXT NOT NULL DEFAULT 'file'")
+            if "options_json" not in existing_cols:
+                conn.execute("ALTER TABLE links ADD COLUMN options_json TEXT")
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_expires_at ON links(expires_at)")
             conn.commit()
 
@@ -60,15 +72,18 @@ class LinkStore:
         expires_at: int,
         filename: Optional[str],
         max_uses: Optional[int],
+        mode: str = "file",
+        options: Optional[dict[str, Any]] = None,
     ) -> None:
         now = int(time.time())
+        options_json = json.dumps(options, ensure_ascii=False) if options else None
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO links (slug, target_url, expires_at, filename, max_uses, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO links (slug, target_url, expires_at, filename, max_uses, created_at, mode, options_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (slug, target_url, expires_at, filename, max_uses, now),
+                (slug, target_url, expires_at, filename, max_uses, now, mode, options_json),
             )
             conn.commit()
 
@@ -76,6 +91,12 @@ class LinkStore:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM links WHERE slug = ?", (slug,)).fetchone()
         return self._row_to_record(row) if row else None
+
+    def get_valid_link(self, slug: str, now: int) -> Optional[LinkRecord]:
+        rec = self.get_link(slug)
+        if not rec or not self._is_valid(rec, now):
+            return None
+        return rec
 
     def revoke_link(self, slug: str) -> bool:
         with self._lock, self._connect() as conn:
@@ -90,11 +111,7 @@ class LinkStore:
                 return None
 
             rec = self._row_to_record(row)
-            if rec.revoked:
-                return None
-            if rec.expires_at > 0 and now > rec.expires_at:
-                return None
-            if rec.max_uses is not None and rec.use_count >= rec.max_uses:
+            if not self._is_valid(rec, now):
                 return None
 
             conn.execute(
@@ -116,7 +133,20 @@ class LinkStore:
             return cur.rowcount
 
     @staticmethod
+    def _is_valid(rec: LinkRecord, now: int) -> bool:
+        if rec.revoked:
+            return False
+        if rec.expires_at > 0 and now > rec.expires_at:
+            return False
+        if rec.max_uses is not None and rec.use_count >= rec.max_uses:
+            return False
+        return True
+
+    @staticmethod
     def _row_to_record(row: sqlite3.Row) -> LinkRecord:
+        raw_options = row["options_json"] if "options_json" in row.keys() else None
+        options = json.loads(raw_options) if raw_options else None
+        mode = row["mode"] if "mode" in row.keys() and row["mode"] else "file"
         return LinkRecord(
             slug=row["slug"],
             target_url=row["target_url"],
@@ -127,4 +157,6 @@ class LinkStore:
             use_count=row["use_count"],
             created_at=row["created_at"],
             last_access_at=row["last_access_at"],
+            mode=mode,
+            options=options,
         )
